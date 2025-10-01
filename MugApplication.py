@@ -135,6 +135,37 @@ def flatten_to_rgb(img, bg_colour =(255,255,255)):
                 pixels[x,y] = bg_colour
     return bg
 
+def urlValidityChecker(url):
+    # Check first if the imgLink_var text box is blank
+    global errorState
+    if imgLink_var.get() == "":
+        fail_label.config(text = "imgLink cannot be blank!")
+        errorState = True
+        return False
+
+    try:
+        # Then check if the string entered actually leads anywhere
+        parsedURL = urllib.parse.urlparse(url)
+        if not parsedURL.scheme or not parsedURL.netloc:
+            fail_label.config(text="imgLink is not a valid URL!")
+            errorState = True
+            return False
+        # If the string passes this check, we now check to see if its a url we can actually work with (has an easily pullable img file)
+        req = urllib.request.Request(url, method='HEAD')
+        with urllib.request.urlopen(req) as response:
+            content_type = response.headers.get('Content-Type')
+            if response.status == 200 and content_type and content_type.startswith('image/'):
+                return True
+            else:
+                print(f"Invalid content type or status: {response.status}, {content_type}")
+                return False
+    except urllib.error.HTTPError as e:
+        print(f"❌ HTTP Error: {e.code} {e.reason}")
+        return False
+    except urllib.error.URLError as e:
+        print(f"❌ URL Error: {e.reason}")
+        return False
+
 def imgLink_webscrape():
     global errorState
     global fileCount
@@ -153,10 +184,11 @@ def imgLink_webscrape():
         if not os.path.exists(save_path):
             break
         fileCount += 1
-    # Check to see if the link is viable, if not, return error to terminal. 
-    try:
+    # Check to see if the link is valid
+    img_url = str(imgLink_var.get())
+    if urlValidityChecker(img_url):
         urllib.request.urlretrieve(str(imgLink_var.get()), save_path)
-        # Need to open it this was so it autoatically closes, and Photoshop will be able to reference it
+        # Need to open it this way, so it automatically closes, and Photoshop will be able to reference it
         with Image.open(save_path) as prodfile:
             # Convert the image from RGBA to RGB to replace the transparency with a white BG
             prodfile_copy = flatten_to_rgb(prodfile)
@@ -164,13 +196,7 @@ def imgLink_webscrape():
         print("prodfile_path is:" + prodfile_path)
         print("Prod Image Downloaded")
         errorState = False
-    except urllib.error.HTTPError as e:
-        fail_label.config(text = "imgLink provided is no good!")
-        print(f"❌ HTTP Error: {e.code} {e.reason}")
-        errorState = True
-    except urllib.error.URLError as e:
-        fail_label.config(text = "imgLink provided is no good!")
-        print(f"❌ URL Error: {e.reason}")
+    else:  
         errorState = True
 
 def qrCode_generate():
@@ -239,7 +265,6 @@ def generateButton():
         toggle_off()
         sucess_label.config(text = "Nice! Prod file now in HotFolder")
         toggle_on()
-
         print("✅ Finished generateButton()")
     if errorState==True: 
         toggle_on()
@@ -282,45 +307,49 @@ def update(ind=0):
 def fileListGenerator():
     global errorState
     toggle_off()
-    # Check if theres an odd number of files, and if there is, tyhen add a placeholder image to make it even. 
-    addPlaceholderImage()
     # Declare the file paths we'll need
-    #path = "C:/Users/jackl/OneDrive/Desktop/TPB/MugApplication/HotFolder/"
     FileList_scrDir = mugApplicationDir + "FileList.txt"
     FileList_destDir = fileDumpDir + "FileList.txt"
-    #HotFolder_path = "C:/Users/jackl/OneDrive/Desktop/TPB/MugApplication/HotFolder/"
-    #FileDump_path = "C:/Users/jackl/OneDrive/Desktop/TPB/MugApplication/FileDump/"
     # Create a list out of all the files in the directory
     prodfilesList = [x for x in os.listdir(hotFolderDir) if x.endswith('.png')]
     prodfilesList.sort()
-    # Create FileList.txt and write the list of files in pairs
-    with open(FileList_scrDir, "w") as f:  
-        print('File1\tFile2', file=f)
-        for i in range(0, len(prodfilesList), 2):
-            if i + 1 < len(prodfilesList):
-                f.write(f"{prodfilesList[i]}\t{prodfilesList[i+1]}\n")
-            else:
-                f.write(f"{prodfilesList[i]}\n")
-    # Move the FileList.txt from the MugApplication folder to the FileDump folder
-    shutil.move(FileList_scrDir, FileList_destDir)
-    # Move all files from HotFolder to FileDump
-    for filename in os.listdir(hotFolderDir):
-        src = os.path.join(hotFolderDir, filename)
-        dst = os.path.join(fileDumpDir, filename)
-        if os.path.isfile(src):
-            shutil.move(src, dst)
-    #Display success GIF
-    errorState = False
-    sucess_label.config(text = "FileList created - files moved to FileDump")
-    toggle_on()
+    print("Length of prodfilesList = " + str(len(prodfilesList)))
+    # If there werent any PNG's - report this to user
+    if (len(prodfilesList)) == 0:
+        fail_label.config(text = "No PNG's in HotFolder to List!")
+        errorState = True
+        toggle_on()
+    else:
+        # Check if theres an odd number of files, and if there is, tyhen add a placeholder image to make it even. 
+        addPlaceholderImage()
+        prodfilesList = [x for x in os.listdir(hotFolderDir) if x.endswith('.png')]
+        prodfilesList.sort()
+        # Create FileList.txt and write the list of files in pairs
+        with open(FileList_scrDir, "w") as f:  
+            print('File1\tFile2', file=f)
+            for i in range(0, len(prodfilesList), 2):
+                if i + 1 < len(prodfilesList):
+                    f.write(f"{prodfilesList[i]}\t{prodfilesList[i+1]}\n")
+                else:
+                    f.write(f"{prodfilesList[i]}\n")
+        # Move the FileList.txt from the MugApplication folder to the FileDump folder
+        shutil.move(FileList_scrDir, FileList_destDir)
+        # Move all files from HotFolder to FileDump
+        for filename in os.listdir(hotFolderDir):
+            src = os.path.join(hotFolderDir, filename)
+            dst = os.path.join(fileDumpDir, filename)
+            if os.path.isfile(src):
+                shutil.move(src, dst)
+        #Display success GIF
+        errorState = False
+        sucess_label.config(text = "FileList created - files moved to FileDump")
+        toggle_on()
 
 def PrintButton():
     global errorState
     #reset success/fail icon
     toggle_off()
     # Convert PSDs to PNGs
-    #input_folder = "C:/Users/jackl/OneDrive/Desktop/TPB/MugApplication/HotFolder/"
-    #output_folder = "C:/Users/jackl/OneDrive/Desktop/TPB/MugApplication/HotFolder/"
     # Make sure PNGs folder exists
     os.makedirs(hotFolderDir, exist_ok=True)
     for filename in os.listdir(hotFolderDir):
@@ -344,14 +373,12 @@ def PrintButton():
             # delete the PSD after you've created the PNG
             os.remove(psd_path) 
     # Delete loose files (excluding folders) in FileDump
-    #FileDump = "C:/Users/jackl/OneDrive/Desktop/TPB/MugApplication/FileDump/"
     for file in os.listdir(fileDumpDir):
         file_path = os.path.join(fileDumpDir, file)
         if os.path.isfile(file_path):  # only delete files, not folders
             os.remove(file_path)
             print(f"Deleted: {file_path}")
     # Print the PNGs in the HotFolder folder 
-    #HotFolder = "C:/Users/jackl/OneDrive/Desktop/TPB/MugApplication/HotFolder/"
     for filename in os.listdir(hotFolderDir):
         if filename.lower().endswith(".png"):
             filepath = os.path.join(hotFolderDir, filename)
@@ -399,7 +426,6 @@ def PrintButton():
     toggle_off() 
     sucess_label.config(text ="Nice! PSD's sent to printer")
     toggle_on() 
-    
     # Create a new archive folder, including todays date
     todaysDate = datetime.today().strftime("%Y-%m-%d")
     newArchiveFolder = f"{todaysDate}_ARCHIVE"
@@ -429,7 +455,7 @@ def addPlaceholderImage():
         placeholderImage = "placeholderImage.png"
         src = os.path.join(mugApplicationDir, placeholderImage)
         dst = os.path.join(hotFolderDir, placeholderImage)
-        shutil.move(src, dst)
+        shutil.copy(src, dst)
         print("placeholerImage moved ocer successfully")
     else:
         print("prodfilesCount list is even!")
