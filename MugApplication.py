@@ -9,9 +9,10 @@ import shutil
 from datetime import datetime
 import win32print
 import win32ui
-from PIL import Image, ImageWin
+from PIL import Image, ImageWin, ImageOps
 import sys
 import subprocess
+from openpyxl import load_workbook
 
 # --- Ensure Pillow is installed ---
 try:
@@ -26,18 +27,17 @@ import qrcode
 #### --- ROOT WINDOW SETUP --- ####
 root = tk.Tk()
 root.title('TPB MUGS APP')
-root.geometry('360x497')
+root.geometry('360x513')
 root['bg'] = '#f0f0f0'
 root.resizable(False, False)
 root.attributes('-topmost', True)
 
 #### --- INTIIAL VARIABLE DECLERATIONS
-hotFolderDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplication/HotFolder/"
+hotFolderDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/HotFolder/"
 os.makedirs(hotFolderDir, exist_ok=True)  # create it if it doesn't exist
-fileDumpDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplication/FileDump/"
+fileDumpDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/FileDump/"
 os.makedirs(fileDumpDir, exist_ok=True)  # create it if it doesn't exist
-mugApplicationDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplication/"
-
+mugApplicationDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/"
  
 ### --- VISUALS
 #TPB LOGO
@@ -63,7 +63,7 @@ except EOFError:
 #FAIL ICON
 failIcon = Image.open(mugApplicationDir + "fail_icon.png")
 failIcon_tk = ImageTk.PhotoImage(failIcon)
- 
+
 #### --- STYLE SET UP
 # BUTTONS
 style = ttk.Style()
@@ -91,7 +91,6 @@ style.configure("My.TLabel",
                 background="#f0f0f0",
                 font=("Arial", 10, "bold"))
 
-# LABELS
 style = ttk.Style()
 style.theme_use("clam")
 style.configure("Cursive.TLabel",
@@ -99,6 +98,19 @@ style.configure("Cursive.TLabel",
                 background="#f0f0f0",
                 font=("Arial", 10, "italic"))
 
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("HyperLink.TLabel",
+                foreground="#196dff",
+                background="#f0f0f0",
+                font=("Arial", 10, "underline"))
+
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("HyperLink_Hover.TLabel",
+                foreground="#6093ec",
+                background="#f0f0f0",
+                font=("Arial", 10, "underline"))
 
 
 ### - FUNCTIONS
@@ -136,13 +148,12 @@ def flatten_to_rgb(img, bg_colour =(255,255,255)):
     return bg
 
 def urlValidityChecker(url):
-    # Check first if the imgLink_var text box is blank
     global errorState
-    if imgLink_var.get() == "":
+    # Check first if the imgLink_var text box is blank
+    if not url or str(url).strip() == "":
         fail_label.config(text = "imgLink cannot be blank!")
         errorState = True
         return False
-
     try:
         # Then check if the string entered actually leads anywhere
         parsedURL = urllib.parse.urlparse(url)
@@ -151,7 +162,7 @@ def urlValidityChecker(url):
             errorState = True
             return False
         # If the string passes this check, we now check to see if its a url we can actually work with (has an easily pullable img file)
-        req = urllib.request.Request(url, method='HEAD')
+        req = urllib.request.Request(url, method='GET')
         with urllib.request.urlopen(req) as response:
             content_type = response.headers.get('Content-Type')
             if response.status == 200 and content_type and content_type.startswith('image/'):
@@ -460,7 +471,251 @@ def addPlaceholderImage():
     else:
         print("prodfilesCount list is even!")
 
+def imgLink_webscrape_XLSX_TPB(sheet):
+    global prodfile_copy
+    global prodfile_path
+    global errorState
+    global qrCodeFile
+    global qrCodeFile_Path
+    global fileCount
+    for row in sheet.iter_rows(min_row=2):
+        if row[0].value and row[2].value and row[3].value:
+            # --- Correlate cell values to required variables
+            orderNumber = row[0].value
+            sku = row[1].value
+            try:
+                quantity = int(row[2].value)
+            except (TypeError, ValueError):
+                print(f"Skipping bad quantity in row: {row[2].value}")
+                continue
+            imgLink = row[3].value
+            # ---- BATCH imgLink_WebScraper
+            for i in range(quantity):
+                fileCount = 0
+                while True:
+                    filename = (
+                        f"{orderNumber}.png" if fileCount == 0
+                        else f"{orderNumber}_{fileCount}.png")
+                    save_path = os.path.join(hotFolderDir, filename)
+                    if not os.path.exists(save_path):
+                        break
+                    fileCount += 1
+                if urlValidityChecker(imgLink):
+                    urllib.request.urlretrieve(imgLink, save_path)  
+                    with Image.open(save_path) as prodfile:
+                        prodfile_copy = flatten_to_rgb(prodfile)
+                    prodfile_path = save_path
+                    print("✅ Prod image downloaded:", prodfile_path)
+                    errorState = False
+                else:
+                    print("❌ Invalid image link:", imgLink)
+                    errorState = True
+                # ---- BATCH QR Code generator
+                qr_fileCount = 0
+                global qrCodeFile
+                while True:
+                    if qr_fileCount == 0:
+                        filename = str(orderNumber) + "_QRcode.png"
+                    else:
+                        filename = str(orderNumber) + "_QRcode-" + str(fileCount) + ".png"
+                    save_path = os.path.join(hotFolderDir, filename)
+                    global qrCodeFile_Path
+                    qrCodeFile_Path = str(save_path)
+                    if not os.path.exists(save_path):
+                        break
+                    qr_fileCount += 1
+                img = qrcode.make(orderNumber)
+                qrCodeFile = flatten_to_rgb(img)
+                img.save(save_path)
+                # ✅ generate combined prod + QR file with unique name
+                filename_combined = f"{orderNumber}_{i}.png"
+                generate_XLSX(filename_combined)
 
+def imgLink_webscrape_XLSX_FE(sheet):
+    global prodfile_copy
+    global prodfile_path
+    global errorState
+    global qrCodeFile
+    global qrCodeFile_Path
+    global fileCount
+    for row in sheet.iter_rows(min_row=2):
+        if row[0].value and row[2].value and row[3].value:
+            # --- Correlate cell values to required variables
+            orderNumber = row[0].value
+            sku = row[1].value
+            try:
+                quantity = int(row[2].value)
+            except (TypeError, ValueError):
+                print(f"Skipping bad quantity in row: {row[2].value}")
+                continue
+            imgLink = row[3].value
+            # ---- BATCH imgLink_WebScraper
+            for i in range(quantity):
+                fileCount = 0
+                while True:
+                    filename = (
+                        f"{orderNumber}.png" if fileCount == 0
+                        else f"{orderNumber}_{fileCount}.png")
+                    save_path = os.path.join(hotFolderDir, filename)
+                    if not os.path.exists(save_path):
+                        break
+                    fileCount += 1
+                if urlValidityChecker(imgLink):
+                    urllib.request.urlretrieve(imgLink, save_path)  
+                    with Image.open(save_path) as prodfile:
+                        prodfile_copy = flatten_to_rgb(prodfile)
+                    prodfile_path = save_path
+                    print("✅ Prod image downloaded:", prodfile_path)
+                    errorState = False
+                else:
+                    print("❌ Invalid image link:", imgLink)
+                    errorState = True
+                # ---- BATCH QR Code generator
+                qr_fileCount = 0
+                global qrCodeFile
+                while True:
+                    if qr_fileCount == 0:
+                        filename = str(orderNumber) + "_QRcode.png"
+                    else:
+                        filename = str(orderNumber) + "_QRcode-" + str(fileCount) + ".png"
+                    save_path = os.path.join(hotFolderDir, filename)
+                    global qrCodeFile_Path
+                    qrCodeFile_Path = str(save_path)
+                    if not os.path.exists(save_path):
+                        break
+                    qr_fileCount += 1
+                img = qrcode.make(orderNumber)
+                qrCodeFile = flatten_to_rgb(img)
+                img.save(save_path)
+                # ✅ generate combined prod + QR file with unique name
+                filename_combined = f"{orderNumber}_{i}.png"
+                generate_XLSX(filename_combined)
+
+def imgLink_webscrape_XLSX_FE(sheet):
+    global prodfile_copy
+    global prodfile_path
+    global errorState
+    global qrCodeFile
+    global qrCodeFile_Path
+    global fileCount
+    for row in sheet.iter_rows():
+        if row[0].value and row[2].value and row[3].value:
+            # --- Correlate cell values to required variables
+            qrCode = row[0].value
+            colourVariation = row[7].value
+            try:
+                quantity = int(row[15].value)
+            except (TypeError, ValueError):
+                print(f"Skipping bad quantity in row: {row[0].value}")
+                continue
+            imgLink = row[23].value
+            # ---- BATCH imgLink_WebScraper
+            for i in range(quantity):
+                fileCount = 0
+                while True:
+                    filename = (
+                        f"{qrCode}.png" if fileCount == 0
+                        else f"{qrCode}_{fileCount}.png")
+                    save_path = os.path.join(hotFolderDir, filename)
+                    if not os.path.exists(save_path):
+                        break
+                    fileCount += 1
+                if urlValidityChecker(imgLink):
+                    urllib.request.urlretrieve(imgLink, save_path)  
+                    with Image.open(save_path) as prodfile:
+                        prodfile_copy = flatten_to_rgb(prodfile)
+                    prodfile_path = save_path
+                    print("✅ Prod image downloaded:", prodfile_path)
+                    errorState = False
+                else:
+                    print("❌ Invalid image link:", imgLink)
+                    errorState = True
+                # ---- BATCH QR Code generator
+                qr_fileCount = 0
+                global qrCodeFile
+                while True:
+                    if qr_fileCount == 0:
+                        filename = str(qrCode) + "_QRcode.png"
+                    else:
+                        filename = str(qrCode) + "_QRcode-" + str(fileCount) + ".png"
+                    save_path = os.path.join(hotFolderDir, filename)
+                    global qrCodeFile_Path
+                    qrCodeFile_Path = str(save_path)
+                    if not os.path.exists(save_path):
+                        break
+                    qr_fileCount += 1
+                img = qrcode.make(qrCode)
+                img = img.convert("RGB")
+                if colourVariation == "Black":
+                    border_size = 10
+                    img = ImageOps.expand(img, border=border_size, fill="black")
+                qrCodeFile = flatten_to_rgb(img)
+                img.save(save_path)
+                # ✅ generate combined prod + QR file with unique name
+                filename_combined = f"{qrCode}_{i}.png"
+                generate_XLSX(filename_combined)
+
+def generate_XLSX(filename):
+    global prodfile_copy
+    # STEP 1: Create a white background template
+    template_width = 2539
+    template_height = 1032
+    template_bg = Image.new("RGB", (template_width, template_height), (255, 255, 255))
+    # STEP 2: Paste prodfile_copy onto the white background, centered
+    x_offset = (template_width - prodfile_copy.width) // 2
+    y_offset = (template_height - prodfile_copy.height) // 2
+    template_bg.paste(prodfile_copy, (x_offset, y_offset))
+    # 🔹 At this point, template_bg is your prodfile centered on white
+    # STEP 3: Create new image to hold template_bg + QR code
+    combined_width = template_bg.width + qrCodeFile.width + 10  # 10px margin between
+    combined_height = max(template_bg.height, qrCodeFile.height)
+    combined_image = Image.new("RGB", (combined_width, combined_height), (255, 255, 255))
+    # STEP 4: Paste the white-backgrounded prodfile first
+    combined_image.paste(template_bg, (0, 0))
+    # STEP 5: Paste the QR code to the right, vertically centered
+    qr_offset_x = template_bg.width + 10  # after prodfile + margin
+    qr_offset_y = combined_height - qrCodeFile.height
+    combined_image.paste(qrCodeFile, (qr_offset_x, qr_offset_y))
+    # STEP 6: Save the result
+    save_path = os.path.join(hotFolderDir, filename)
+    combined_image.save(save_path)
+    print(f"Saved combined image at: {save_path}")
+    # STEP 7: Rotate image for your PSD layout
+    rotated_image = combined_image.transpose(Image.ROTATE_90)
+    rotated_image.save(save_path)
+    print("Rotated and saved")
+    # STEP 8: Clean up
+    prodfile_copy.close()
+    qrCodeFile.close()
+    combined_image.close()
+    template_bg.close()
+    os.remove(prodfile_path)
+    os.remove(qrCodeFile_Path)
+    print("generate_XLSX() acknowledged")
+
+def xlsxUpload_click(event):
+    global prodfile_copy
+    global errorState
+    print("Label clicked – starting upload…")  # debug
+    for file in os.listdir(hotFolderDir):
+        if file.endswith(".xlsx") and file.startswith("TPB"):
+            filepath = os.path.join(hotFolderDir, file)
+            workbook = load_workbook(filepath)
+            sheet = workbook.active
+            imgLink_webscrape_XLSX_TPB(sheet)
+            
+        if file.endswith(".xlsx") and file.startswith("FE"):
+            filepath = os.path.join(hotFolderDir, file)
+            workbook = load_workbook(filepath)
+            sheet = workbook.active
+            imgLink_webscrape_XLSX_FE(sheet)
+
+def xlsxUpload_enter(event):
+    xlsxUpload_label.config(style="HyperLink_Hover.TLabel")
+    
+def xlsxUpload_leave(event):
+    xlsxUpload_label.config(style="HyperLink.TLabel")
+    
 #### --- WINDOW ELEMENT PROPERTIES --- ####
 # FRAME
 mainFrame = ttk.Frame(root, style='My.TFrame')
@@ -499,7 +754,13 @@ shipmentNo_label.pack()
 shipmentNo_var = tk.StringVar()
 shipmentNo_entry = ttk.Entry(mainFrame, textvariable=shipmentNo_var)
 shipmentNo_entry.pack(pady=5)
-
+#----
+# .xlsx upload LABEL
+xlsxUpload_label = ttk.Label(mainFrame, text='.xlsx upload', style='HyperLink.TLabel')
+xlsxUpload_label.pack()
+xlsxUpload_label.bind("<Button-1>", xlsxUpload_click)
+xlsxUpload_label.bind("<Enter>", xlsxUpload_enter)
+xlsxUpload_label.bind("<Leave>", xlsxUpload_leave)
 #----
 # Generate BUTTON
 Generate_button = ttk.Button(mainFrame, text='1.PULL FILE', style='My.TButton', width=20 , command=generateButton)
