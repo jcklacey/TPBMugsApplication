@@ -709,6 +709,8 @@ def xlsxUpload_click(event):
             workbook = load_workbook(filepath)
             sheet = workbook.active
             imgLink_webscrape_XLSX_FE(sheet)
+    else:
+        print("No .xlsx file in Hotfolder")
 
 def xlsxUpload_enter(event):
     xlsxUpload_label.config(style="HyperLink_Hover.TLabel")
