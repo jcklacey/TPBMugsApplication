@@ -13,6 +13,9 @@ from PIL import Image, ImageWin, ImageOps
 import sys
 import subprocess
 from openpyxl import load_workbook
+from pdf2image import convert_from_path
+from pdf2image import convert_from_bytes
+import requests
 
 # --- Ensure Pillow is installed ---
 try:
@@ -33,11 +36,11 @@ root.resizable(False, False)
 root.attributes('-topmost', True)
 
 #### --- INTIIAL VARIABLE DECLERATIONS
-hotFolderDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/HotFolder/"
+hotFolderDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplicationHotFolder/"
 os.makedirs(hotFolderDir, exist_ok=True)  # create it if it doesn't exist
-fileDumpDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/FileDump/"
+fileDumpDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplicationFileDump/"
 os.makedirs(fileDumpDir, exist_ok=True)  # create it if it doesn't exist
-mugApplicationDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/"
+mugApplicationDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplication/"
  
 ### --- VISUALS
 #TPB LOGO
@@ -154,6 +157,11 @@ def urlValidityChecker(url):
         fail_label.config(text = "imgLink cannot be blank!")
         errorState = True
         return False
+    if url.startswith("data:"):
+        response = requests.get(url)
+        pdf = convert_from_bytes(response.content)
+        pdf[0].save(url,"PNG")
+        return url
     try:
         # Then check if the string entered actually leads anywhere
         parsedURL = urllib.parse.urlparse(url)
