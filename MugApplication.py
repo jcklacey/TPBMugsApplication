@@ -4,15 +4,12 @@ import urllib.request
 import urllib.error
 import tkinter as tk
 from tkinter import ttk
-from pathlib import Path
-import shutil
-from datetime import datetime
-import win32print
-import win32ui
-from PIL import Image, ImageWin, ImageOps
+from tkinter import filedialog
+from PIL import Image
 import sys
 import subprocess
-from openpyxl import load_workbook
+import threading
+import csv
 
 # --- Ensure Pillow is installed ---
 try:
@@ -26,7 +23,7 @@ import qrcode
 
 #### --- ROOT WINDOW SETUP --- ####
 root = tk.Tk()
-root.title('TPB MUGS APP')
+root.title('TPB POSTER APP')
 root.geometry('360x513')
 root['bg'] = '#f0f0f0'
 root.resizable(False, False)
@@ -38,6 +35,7 @@ os.makedirs(hotFolderDir, exist_ok=True)  # create it if it doesn't exist
 fileDumpDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/FileDump/"
 os.makedirs(fileDumpDir, exist_ok=True)  # create it if it doesn't exist
 mugApplicationDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/"
+errorState = False
  
 ### --- VISUALS
 #TPB LOGO
@@ -112,19 +110,51 @@ style.configure("HyperLink_Hover.TLabel",
                 background="#f0f0f0",
                 font=("Arial", 10, "underline"))
 
+### - CLASS (FOR PLACEHOLDER TEXT)
+class EntryWithPlaceholder(tk.Entry):
+    def __init__(self, master=None, placeholder="PLACEHOLDER", color='grey', **kwargs):
+        super().__init__(master, **kwargs)
+
+        self.placeholder = placeholder
+        self.placeholder_color = color
+        self.default_fg_colour = self['fg']
+
+        self.bind("<FocusIn>", self.foc_in)
+        self.bind("<FocusOut>", self.foc_out)
+
+        self.put_placeholder()
+
+    def put_placeholder(self):
+        self.insert(0, self.placeholder)
+        self['fg'] = self.placeholder_color
+
+    def foc_in(self, *args):
+        if self['fg'] == self.placeholder_color:
+            self.delete('0', 'end')
+            self['fg'] = self.default_fg_colour
+
+    def foc_out(self, *args):
+        if not self.get():
+            self.put_placeholder()
 
 ### - FUNCTIONS
+def update(ind=0):
+    frame = frames[ind]
+    ripperGIF_label.configure(image=frame)
+    ind = (ind + 1) % len(frames)
+    root.after(100, update, ind)  
+
 def toggle_on():
     if errorState==False:
         ripperGIF_label.pack()
-        sucess_label.pack()
+        success_label.pack()
     if errorState==True:
         failIcon_label.pack()
         fail_label.pack()
 
 def toggle_off():
     ripperGIF_label.pack_forget()     
-    sucess_label.pack_forget()   
+    success_label.pack_forget()   
     failIcon_label.pack_forget()
     fail_label.pack_forget()
 
@@ -236,7 +266,7 @@ def generateButton():
     imgLink_webscrape()
     if errorState==False:
         qrCode_generate()
-        sucess_label.config(text = "Print file pulled... generating Prod file now")
+        success_label.config(text = "Print file pulled... generating Prod file now")
         toggle_on()
         # STEP 1: Create a white background template
         template_width = 2539
@@ -274,458 +304,164 @@ def generateButton():
         os.remove(prodfile_path)
         os.remove(qrCodeFile_Path)
         toggle_off()
-        sucess_label.config(text = "Nice! Prod file now in HotFolder")
+        success_label.config(text = "Nice! Prod file now in HotFolder")
         toggle_on()
         print("✅ Finished generateButton()")
     if errorState==True: 
         toggle_on()
+        return   
+
+def process_poster_csv(file_path, save_dir):
+    """Process poster CSV, download artwork, and generate posters with QR codes."""
+    print(f"📂 Processing CSV: {file_path}")
+
+    # --- Read CSV ---
+    with open(file_path, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        rows = list(reader)
+
+    total_rows = len(rows)
+    print(f"🧾 Found {total_rows} rows in CSV\n")
+
+    for i, row in enumerate(rows, start=1):
+        print(f"➡️  [{i}/{total_rows}] Starting row {i}")
+
+        # --- Extract required fields ---
+        order_number = row.get("Id", "").strip()
+        shipment_id = row.get("Shipment id", "").strip()
+        shipment_item = row.get("Shipment item number", "").strip()
+        artwork_url = row.get("Artwork 1 artwork file url", "").strip()
+
+        if not order_number or not shipment_id or not artwork_url:
+            print(f"⚠️  Skipping row {i}: Missing one or more required fields")
+            continue
+
+        file_name = f"{shipment_id}-{shipment_item}"
+        print(f"   ➤ File name: {file_name}")
+        print(f"   ➤ QR ID: {order_number}")
+        print(f"   ➤ Artwork URL: {artwork_url}")
+
+        # --- Generate unique temp name to prevent overwriting ---
+        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        temp_ext = ".pdf" if artwork_url.lower().endswith(".pdf") else ".png"
+        temp_filename = f"{file_name}_{random_suffix}{temp_ext}"
+        temp_path = os.path.join(save_dir, temp_filename)
+
+        # --- Download artwork ---
+        try:
+            urllib.request.urlretrieve(artwork_url, temp_path)
+            print(f"📥  Downloaded artwork to: {temp_path}")
+        except Exception as e:
+            print(f"❌  Failed to download artwork for {file_name}: {e}")
+            continue
+
+        # --- Process poster ---
+        generate_dynamic_poster(temp_path, order_number, save_dir, i, total_rows)
+
+        # small delay between downloads (helps prevent server throttling)
+        time.sleep(0.25)
+
+    print(f"\n✅ All {total_rows} rows processed.\n")
+
+def generate_dynamic_poster(poster_path, order_number, save_dir, index, total):
+    """Add cut line + QR code to poster, converting PDFs if necessary."""
+    try:
+        print(f"🖼️  [{index}/{total}] Processing poster for order: {order_number}")
+
+        # --- Detect and handle PDF ---
+        if poster_path.lower().endswith(".pdf"):
+            print(f"   🧾 Converting PDF to image...")
+            with Image.open(poster_path) as pdf:
+                pdf.load()
+                img = pdf.convert("RGB")
+        else:
+            img = Image.open(poster_path).convert("RGB")
+
+        # --- Add white background and red cut line ---
+        margin = 50
+        line_thickness = 10
+        template_width = img.width + (margin * 2)
+        template_height = img.height + (margin * 2)
+        template_bg = Image.new("RGB", (template_width, template_height), (255, 255, 255))
+
+        x_offset = (template_width - img.width) // 2
+        y_offset = (template_height - img.height) // 2
+        template_bg.paste(img, (x_offset, y_offset))
+
+        draw = ImageDraw.Draw(template_bg)
+        draw.rectangle(
+            [0, template_bg.height - line_thickness, template_bg.width, template_bg.height],
+            fill=(255, 0, 0)
+        )
+
+        # --- Generate and place QR code ---
+        qr_img = qrcode.make(order_number)
+        qr_rgb = qr_img.convert("RGB")
+
+        combined_height = template_bg.height + qr_rgb.height + 20
+        combined_img = Image.new("RGB", (template_bg.width, combined_height), (255, 255, 255))
+        combined_img.paste(template_bg, (0, 0))
+
+        qr_x = (combined_img.width - qr_rgb.width) // 2
+        qr_y = template_bg.height + 10
+        combined_img.paste(qr_rgb, (qr_x, qr_y))
+
+        # --- Save final image ---
+        output_filename = f"{order_number}_{index}.png"
+        output_path = os.path.join(save_dir, output_filename)
+        combined_img.save(output_path)
+        print(f"✅  Saved poster: {output_path}")
+
+    except Exception as e:
+        print(f"❌  Error generating poster for {order_number}: {e}")
+
+    finally:
+        # --- Clean up temp file ---
+        try:
+            os.remove(poster_path)
+            print(f"🗑️  Deleted temp file: {poster_path}\n")
+        except Exception as e:
+            print(f"⚠️  Could not delete temp file: {e}\n")
+
+def csvUpload_click(event=None):
+    """Upload CSV file and process posters with progress bar."""
+    file_path = filedialog.askopenfilename(
+        title="Select .csv file", 
+        filetypes=[("CSV files", "*.csv")]
+    )
+    if not file_path:
+        print("No file selected.")
         return
 
-def resizeToTemplate():
- # -----------------------------------------------
-        # Combine our prodfile with a correctly sized template to avoid negative space issues in Photoshop
-        # Establish the correct height and width for what file should be
-        global template_width
-        global template_height
-        template_width = 3159 #pixels ----> this is wrong, but will work for now
-        template_height = 1125 #pixels ----> this is wrong, but will work for now
-        #Create a new template file to paste our prodfile on to
-        global prodFileTemplate_image
-        prodFileTemplate_image = Image.new("RGB", (template_width, template_height), (255, 255, 255))
-        # Establish values to determine where the middle is of our template
-        x_offset = (template_width - prodfile_copy.width) // 2
-        y_offset = (template_height - prodfile_copy.height) // 2
-        # Paste prodfile copy ontop of the template, centered
-        prodFileTemplate_image.paste(prodfile_copy, (x_offset, y_offset))
-        # Save this new combined image into the specified save path
-        filename = str(shipmentNo_var.get()) + "-" + str(fileCount) + ".png"
-        print("state check 1")
-        save_path = os.path.join(hotFolderDir, filename)
-        prodFileTemplate_image.save(str(save_path))
-        print("saved in" + str(filename))
-        # Close image objects
-        prodfile.close()
-        #prodFileTemplate_image.close()
-        print("state check 2")
-        # -----------------------------------------------
+    upload_button.config(state='disabled')
 
-def update(ind=0):
-    frame = frames[ind]
-    ripperGIF_label.configure(image=frame)
-    ind = (ind + 1) % len(frames)
-    root.after(100, update, ind)     
+    def worker():
+        try:
+            print(f"⏳ Starting poster batch from: {file_path}")
+            root.after(0, lambda: (
+                progress_label.config(text="Processing… please wait"),
+                progress_label.pack(pady=5),
+                progress_bar.pack(pady=5),
+                progress_bar.start(10)
+            ))
 
-def fileListGenerator():
-    global errorState
-    toggle_off()
-    # Declare the file paths we'll need
-    FileList_scrDir = mugApplicationDir + "FileList.txt"
-    FileList_destDir = fileDumpDir + "FileList.txt"
-    # Create a list out of all the files in the directory
-    prodfilesList = [x for x in os.listdir(hotFolderDir) if x.endswith('.png')]
-    prodfilesList.sort()
-    print("Length of prodfilesList = " + str(len(prodfilesList)))
-    # If there werent any PNG's - report this to user
-    if (len(prodfilesList)) == 0:
-        fail_label.config(text = "No PNG's in HotFolder to List!")
-        errorState = True
-        toggle_on()
-    else:
-        # Check if theres an odd number of files, and if there is, tyhen add a placeholder image to make it even. 
-        addPlaceholderImage()
-        prodfilesList = [x for x in os.listdir(hotFolderDir) if x.endswith('.png')]
-        prodfilesList.sort()
-        # Create FileList.txt and write the list of files in pairs
-        with open(FileList_scrDir, "w") as f:  
-            print('File1\tFile2', file=f)
-            for i in range(0, len(prodfilesList), 2):
-                if i + 1 < len(prodfilesList):
-                    f.write(f"{prodfilesList[i]}\t{prodfilesList[i+1]}\n")
-                else:
-                    f.write(f"{prodfilesList[i]}\n")
-        # Move the FileList.txt from the MugApplication folder to the FileDump folder
-        shutil.move(FileList_scrDir, FileList_destDir)
-        # Move all files from HotFolder to FileDump
-        for filename in os.listdir(hotFolderDir):
-            src = os.path.join(hotFolderDir, filename)
-            dst = os.path.join(fileDumpDir, filename)
-            if os.path.isfile(src):
-                shutil.move(src, dst)
-        #Display success GIF
-        errorState = False
-        sucess_label.config(text = "FileList created - files moved to FileDump")
-        toggle_on()
+            process_poster_csv(file_path, hotFolderDir)
 
-def PrintButton():
-    global errorState
-    #reset success/fail icon
-    toggle_off()
-    # Convert PSDs to PNGs
-    # Make sure PNGs folder exists
-    os.makedirs(hotFolderDir, exist_ok=True)
-    for filename in os.listdir(hotFolderDir):
-        if filename.lower().endswith(".psd"):
-            psd_path = os.path.join(hotFolderDir, filename)
-            png_filename = os.path.splitext(filename)[0] + ".png"
-            png_path = os.path.join(hotFolderDir, png_filename)
-            try:
-            # Open PSD and convert
-                with Image.open(psd_path) as img:
-                    dpi = img.info.get("dpi", (300, 300))
-                    img.save(png_path, "PNG", dpi=dpi)
-                    time.sleep(0.5)
-                    print(f"Converted: {filename} → {png_filename}")
-                    errorState = False
-                    toggle_on()
-            except Exception as e:
-                print(f"Failed to convert {filename}: {e}") 
-                errorState= True
-                toggle_on()
-            # delete the PSD after you've created the PNG
-            os.remove(psd_path) 
-    # Delete loose files (excluding folders) in FileDump
-    for file in os.listdir(fileDumpDir):
-        file_path = os.path.join(fileDumpDir, file)
-        if os.path.isfile(file_path):  # only delete files, not folders
-            os.remove(file_path)
-            print(f"Deleted: {file_path}")
-    # Print the PNGs in the HotFolder folder 
-    for filename in os.listdir(hotFolderDir):
-        if filename.lower().endswith(".png"):
-            filepath = os.path.join(hotFolderDir, filename)
-            if os.path.isfile(filepath):
-                try:
-                    # print the file on the computers default printer
-                    print(f"Sending {filename} to printer...")
-                     # --- Start direct printing ---
-                    printer_name = win32print.GetDefaultPrinter()
-                    # Create device context
-                    dc = win32ui.CreateDC()           # no arguments here
-                    dc.CreatePrinterDC(printer_name)  # now pass the printer name
-                    # Open the image
-                    img = Image.open(filepath)
-                    #---START DPI HANDLING------------------
-                    dpi = img.info.get("dpi", (300, 300))
-                    # Printer DPI (horizontal, vertical)
-                    printer_dpi_x = dc.GetDeviceCaps(88)  # LOGPIXELSX
-                    printer_dpi_y = dc.GetDeviceCaps(90)  # LOGPIXELSY
-                    # Convert image size from pixels → inches
-                    width_inch = img.width / dpi[0]
-                    height_inch = img.height / dpi[1]
-                    # Convert inches → printer units
-                    width_printerUnits = int(width_inch * printer_dpi_x)
-                    height_prinerUnits = int(height_inch * printer_dpi_y)
-                    #---END DPI HANDLING------------------
-                    # Start printing
-                    dc.StartDoc(filepath)
-                    dc.StartPage()
-                    # Draw image at correct physical size
-                    dib = ImageWin.Dib(img)
-                    dib.draw(dc.GetHandleOutput(), (0, 0, width_printerUnits, height_prinerUnits))
-                    # Finish printing
-                    dc.EndPage()
-                    dc.EndDoc()
-                    dc.DeleteDC()
-                    # --- End direct printing ---
-                except Exception as e:
-                    print(f"Failed to print {filename}: {e}")
-                    errorState=True
-                    toggle_on()
-                shutil.move(filepath, fileDumpDir)
-                errorState=False
-                toggle_on() 
-    toggle_off() 
-    sucess_label.config(text ="Nice! PSD's sent to printer")
-    toggle_on() 
-    # Create a new archive folder, including todays date
-    todaysDate = datetime.today().strftime("%Y-%m-%d")
-    newArchiveFolder = f"{todaysDate}_ARCHIVE"
-    newArchiveFolder_path = os.path.join(fileDumpDir, newArchiveFolder)
-    os.makedirs(newArchiveFolder_path, exist_ok=True)
-    # Put all loose files (not folders) in FileDump into the new archive folder
-    for filename in os.listdir(fileDumpDir):
-        filepath = os.path.join(fileDumpDir, filename)
-        if filename.lower().endswith((".png", ".txt")):
-            if os.path.isfile(filepath):
-                try:
-                    shutil.move(filepath, newArchiveFolder_path)
-                    # Show Success message
-                    errorState=True
-                    toggle_on()
-                except:
-                    print(f"Failed to move {filename}: {e}")
-                    # Show Fail message
-                    errorState=False
-                    toggle_on()
+        finally:
+            root.after(0, lambda: (
+                upload_button.config(state='normal'),
+                progress_bar.stop(),
+                progress_bar.pack_forget(),
+                progress_label.config(text="Upload complete ✅")
+            ))
 
-def addPlaceholderImage():
-    # Create a list out of all the files in the directory
-    prodfilesCount = [x for x in os.listdir(hotFolderDir) if x.endswith('.png')]
-    if len(prodfilesCount) % 2 != 0:
-        print("prodfilesCount list is odd!")
-        placeholderImage = "placeholderImage.png"
-        src = os.path.join(mugApplicationDir, placeholderImage)
-        dst = os.path.join(hotFolderDir, placeholderImage)
-        shutil.copy(src, dst)
-        print("placeholerImage moved ocer successfully")
-    else:
-        print("prodfilesCount list is even!")
-
-def imgLink_webscrape_XLSX_TPB(sheet):
-    global prodfile_copy
-    global prodfile_path
-    global errorState
-    global qrCodeFile
-    global qrCodeFile_Path
-    global fileCount
-    for row in sheet.iter_rows(min_row=2):
-        if row[0].value and row[2].value and row[3].value:
-            # --- Correlate cell values to required variables
-            orderNumber = row[0].value
-            sku = row[1].value
-            try:
-                quantity = int(row[2].value)
-            except (TypeError, ValueError):
-                print(f"Skipping bad quantity in row: {row[2].value}")
-                continue
-            imgLink = row[3].value
-            # ---- BATCH imgLink_WebScraper
-            for i in range(quantity):
-                fileCount = 0
-                while True:
-                    filename = (
-                        f"{orderNumber}.png" if fileCount == 0
-                        else f"{orderNumber}_{fileCount}.png")
-                    save_path = os.path.join(hotFolderDir, filename)
-                    if not os.path.exists(save_path):
-                        break
-                    fileCount += 1
-                if urlValidityChecker(imgLink):
-                    urllib.request.urlretrieve(imgLink, save_path)  
-                    with Image.open(save_path) as prodfile:
-                        prodfile_copy = flatten_to_rgb(prodfile)
-                    prodfile_path = save_path
-                    print("✅ Prod image downloaded:", prodfile_path)
-                    errorState = False
-                else:
-                    print("❌ Invalid image link:", imgLink)
-                    errorState = True
-                # ---- BATCH QR Code generator
-                qr_fileCount = 0
-                global qrCodeFile
-                while True:
-                    if qr_fileCount == 0:
-                        filename = str(orderNumber) + "_QRcode.png"
-                    else:
-                        filename = str(orderNumber) + "_QRcode-" + str(fileCount) + ".png"
-                    save_path = os.path.join(hotFolderDir, filename)
-                    global qrCodeFile_Path
-                    qrCodeFile_Path = str(save_path)
-                    if not os.path.exists(save_path):
-                        break
-                    qr_fileCount += 1
-                img = qrcode.make(orderNumber)
-                qrCodeFile = flatten_to_rgb(img)
-                img.save(save_path)
-                # ✅ generate combined prod + QR file with unique name
-                filename_combined = f"{orderNumber}_{i}.png"
-                generate_XLSX(filename_combined)
-
-def imgLink_webscrape_XLSX_FE(sheet):
-    global prodfile_copy
-    global prodfile_path
-    global errorState
-    global qrCodeFile
-    global qrCodeFile_Path
-    global fileCount
-    for row in sheet.iter_rows(min_row=2):
-        if row[0].value and row[2].value and row[3].value:
-            # --- Correlate cell values to required variables
-            orderNumber = row[0].value
-            sku = row[1].value
-            try:
-                quantity = int(row[2].value)
-            except (TypeError, ValueError):
-                print(f"Skipping bad quantity in row: {row[2].value}")
-                continue
-            imgLink = row[3].value
-            # ---- BATCH imgLink_WebScraper
-            for i in range(quantity):
-                fileCount = 0
-                while True:
-                    filename = (
-                        f"{orderNumber}.png" if fileCount == 0
-                        else f"{orderNumber}_{fileCount}.png")
-                    save_path = os.path.join(hotFolderDir, filename)
-                    if not os.path.exists(save_path):
-                        break
-                    fileCount += 1
-                if urlValidityChecker(imgLink):
-                    urllib.request.urlretrieve(imgLink, save_path)  
-                    with Image.open(save_path) as prodfile:
-                        prodfile_copy = flatten_to_rgb(prodfile)
-                    prodfile_path = save_path
-                    print("✅ Prod image downloaded:", prodfile_path)
-                    errorState = False
-                else:
-                    print("❌ Invalid image link:", imgLink)
-                    errorState = True
-                # ---- BATCH QR Code generator
-                qr_fileCount = 0
-                global qrCodeFile
-                while True:
-                    if qr_fileCount == 0:
-                        filename = str(orderNumber) + "_QRcode.png"
-                    else:
-                        filename = str(orderNumber) + "_QRcode-" + str(fileCount) + ".png"
-                    save_path = os.path.join(hotFolderDir, filename)
-                    global qrCodeFile_Path
-                    qrCodeFile_Path = str(save_path)
-                    if not os.path.exists(save_path):
-                        break
-                    qr_fileCount += 1
-                img = qrcode.make(orderNumber)
-                qrCodeFile = flatten_to_rgb(img)
-                img.save(save_path)
-                # ✅ generate combined prod + QR file with unique name
-                filename_combined = f"{orderNumber}_{i}.png"
-                generate_XLSX(filename_combined)
-
-def imgLink_webscrape_XLSX_FE(sheet):
-    global prodfile_copy
-    global prodfile_path
-    global errorState
-    global qrCodeFile
-    global qrCodeFile_Path
-    global fileCount
-    for row in sheet.iter_rows():
-        if row[0].value and row[2].value and row[3].value:
-            # --- Correlate cell values to required variables
-            qrCode = row[0].value
-            colourVariation = row[7].value
-            try:
-                quantity = int(row[15].value)
-            except (TypeError, ValueError):
-                print(f"Skipping bad quantity in row: {row[0].value}")
-                continue
-            imgLink = row[23].value
-            # ---- BATCH imgLink_WebScraper
-            for i in range(quantity):
-                fileCount = 0
-                while True:
-                    filename = (
-                        f"{qrCode}.png" if fileCount == 0
-                        else f"{qrCode}_{fileCount}.png")
-                    save_path = os.path.join(hotFolderDir, filename)
-                    if not os.path.exists(save_path):
-                        break
-                    fileCount += 1
-                if urlValidityChecker(imgLink):
-                    urllib.request.urlretrieve(imgLink, save_path)  
-                    with Image.open(save_path) as prodfile:
-                        prodfile_copy = flatten_to_rgb(prodfile)
-                    prodfile_path = save_path
-                    print("✅ Prod image downloaded:", prodfile_path)
-                    errorState = False
-                else:
-                    print("❌ Invalid image link:", imgLink)
-                    errorState = True
-                # ---- BATCH QR Code generator
-                qr_fileCount = 0
-                global qrCodeFile
-                while True:
-                    if qr_fileCount == 0:
-                        filename = str(qrCode) + "_QRcode.png"
-                    else:
-                        filename = str(qrCode) + "_QRcode-" + str(fileCount) + ".png"
-                    save_path = os.path.join(hotFolderDir, filename)
-                    global qrCodeFile_Path
-                    qrCodeFile_Path = str(save_path)
-                    if not os.path.exists(save_path):
-                        break
-                    qr_fileCount += 1
-                img = qrcode.make(qrCode)
-                img = img.convert("RGB")
-                if colourVariation == "Black":
-                    border_size = 10
-                    img = ImageOps.expand(img, border=border_size, fill="black")
-                qrCodeFile = flatten_to_rgb(img)
-                img.save(save_path)
-                # ✅ generate combined prod + QR file with unique name
-                filename_combined = f"{qrCode}_{i}.png"
-                generate_XLSX(filename_combined)
-
-def generate_XLSX(filename):
-    global prodfile_copy
-    # STEP 1: Create a white background template
-    template_width = 2539
-    template_height = 1032
-    template_bg = Image.new("RGB", (template_width, template_height), (255, 255, 255))
-    # STEP 2: Paste prodfile_copy onto the white background, centered
-    x_offset = (template_width - prodfile_copy.width) // 2
-    y_offset = (template_height - prodfile_copy.height) // 2
-    template_bg.paste(prodfile_copy, (x_offset, y_offset))
-    # 🔹 At this point, template_bg is your prodfile centered on white
-    # STEP 3: Create new image to hold template_bg + QR code
-    combined_width = template_bg.width + qrCodeFile.width + 10  # 10px margin between
-    combined_height = max(template_bg.height, qrCodeFile.height)
-    combined_image = Image.new("RGB", (combined_width, combined_height), (255, 255, 255))
-    # STEP 4: Paste the white-backgrounded prodfile first
-    combined_image.paste(template_bg, (0, 0))
-    # STEP 5: Paste the QR code to the right, vertically centered
-    qr_offset_x = template_bg.width + 10  # after prodfile + margin
-    qr_offset_y = combined_height - qrCodeFile.height
-    combined_image.paste(qrCodeFile, (qr_offset_x, qr_offset_y))
-    # STEP 6: Save the result
-    save_path = os.path.join(hotFolderDir, filename)
-    combined_image.save(save_path)
-    print(f"Saved combined image at: {save_path}")
-    # STEP 7: Rotate image for your PSD layout
-    rotated_image = combined_image.transpose(Image.ROTATE_90)
-    rotated_image.save(save_path)
-    print("Rotated and saved")
-    # STEP 8: Clean up
-    prodfile_copy.close()
-    qrCodeFile.close()
-    combined_image.close()
-    template_bg.close()
-    os.remove(prodfile_path)
-    os.remove(qrCodeFile_Path)
-    print("generate_XLSX() acknowledged")
-
-def xlsxUpload_click(event):
-    global prodfile_copy
-    global errorState
-    print("Label clicked – starting upload…")  # debug
-    for file in os.listdir(hotFolderDir):
-        if file.endswith(".xlsx") and file.startswith("TPB"):
-            filepath = os.path.join(hotFolderDir, file)
-            workbook = load_workbook(filepath)
-            sheet = workbook.active
-            imgLink_webscrape_XLSX_TPB(sheet)
-            
-        if file.endswith(".xlsx") and file.startswith("FE"):
-            filepath = os.path.join(hotFolderDir, file)
-            workbook = load_workbook(filepath)
-            sheet = workbook.active
-            imgLink_webscrape_XLSX_FE(sheet)
-    else:
-        print("No .xlsx file in Hotfolder")
-
-def xlsxUpload_enter(event):
-    xlsxUpload_label.config(style="HyperLink_Hover.TLabel")
-    
-def xlsxUpload_leave(event):
-    xlsxUpload_label.config(style="HyperLink.TLabel")
+    threading.Thread(target=worker, daemon=True).start()
     
 #### --- WINDOW ELEMENT PROPERTIES --- ####
 # FRAME
 mainFrame = ttk.Frame(root, style='My.TFrame')
 mainFrame.pack(padx=20, pady=20, fill="both", expand=True)
-# mainWindow LABEL
-# mainWindow_label = ttk.Label(mainFrame, text='FILE RIPPER', background="grey", font=("Arial", 16,"bold"))
-# mainWindow_label.pack(pady=20)
-# FE banner LABEL
+# FR banner LABEL
 FR_banner_label = tk.Label(mainFrame, image=FR_banner_image, border=0)
 FR_banner_label.pack(pady=3)
 # TPB banner LABEL
@@ -733,54 +469,39 @@ tpb_banner_label = tk.Label(mainFrame, image=tpb_banner_image, border=0)
 tpb_banner_label.pack()
 
 #----
-# imgLink LABEL
-imgLink_label = ttk.Label(mainFrame, text='imgLink:', style='My.TLabel')
-imgLink_label.pack()
 # imgLink ENTRY
 imgLink_var = tk.StringVar()
-imgLink_entry = ttk.Entry(mainFrame, textvariable=imgLink_var)
+imgLink_entry = EntryWithPlaceholder(mainFrame, "ImgLink", textvariable=imgLink_var)
 imgLink_entry.pack(pady=5)
+
 #----
-# qrCode LABEL
-qrCode_label = ttk.Label(mainFrame, text='QR Code:', style='My.TLabel')
-qrCode_label.pack()
 # qrCode ENTRY
 qrCode_var = tk.StringVar()
-qrCode_entry = ttk.Entry(mainFrame, textvariable=qrCode_var)
+qrCode_entry = EntryWithPlaceholder(mainFrame, "QR Code", textvariable=qrCode_var)
 qrCode_entry.pack(pady=5)
 #----
-# shipmentNo LABEL
-shipmentNo_label = ttk.Label(mainFrame, text='Shipment Number:', style='My.TLabel')
-shipmentNo_label.pack()
 # shipmentNo ENTRY
 shipmentNo_var = tk.StringVar()
-shipmentNo_entry = ttk.Entry(mainFrame, textvariable=shipmentNo_var)
+shipmentNo_entry = EntryWithPlaceholder(mainFrame,"Shipment Number", textvariable=shipmentNo_var)
 shipmentNo_entry.pack(pady=5)
 #----
-# .xlsx upload LABEL
-xlsxUpload_label = ttk.Label(mainFrame, text='.xlsx upload', style='HyperLink.TLabel')
-xlsxUpload_label.pack()
-xlsxUpload_label.bind("<Button-1>", xlsxUpload_click)
-xlsxUpload_label.bind("<Enter>", xlsxUpload_enter)
-xlsxUpload_label.bind("<Leave>", xlsxUpload_leave)
-#----
+
 # Generate BUTTON
-Generate_button = ttk.Button(mainFrame, text='1.PULL FILE', style='My.TButton', width=20 , command=generateButton)
+Generate_button = ttk.Button(mainFrame, text='Generate Prod File', style='My.TButton', width=20 , command=generateButton)
 Generate_button.pack(pady=3)
 #----
-# fileListGenerate BUTTON
-fileListGenerate_button = ttk.Button(mainFrame, text='2.CREATE LIST', style='My.TButton', width=20, command=fileListGenerator)
-fileListGenerate_button.pack(pady=3)
-#----
-# Print BUTTON
-Print_button = ttk.Button(mainFrame, text='3.PRINT', style='My.TButton' , width=20, command=PrintButton)
-Print_button.pack(pady=3)
-#----
-
-# Ripper GIF LABEL
+# Upload BUTTON
+upload_button = ttk.Button(mainFrame, text='Upload .csv File', style='My.TButton', command=csvUpload_click)
+upload_button.pack(pady=5)
+#---- 
+# progress BAR
+progress_bar = ttk.Progressbar(mainFrame, mode='indeterminate', length=250)
+# Progress label 
+progress_label = ttk.Label(mainFrame, text="")
+# Ripper GIF LABEL 
 ripperGIF_label = tk.Label(mainFrame, border=0)
 # success LABEL
-sucess_label = ttk.Label(mainFrame, text='nice!', style='Cursive.TLabel')
+success_label = ttk.Label(mainFrame, text='nice!', style='Cursive.TLabel')
 # Fail_icon LABEL
 failIcon_label = ttk.Label(mainFrame, border=0, image=failIcon_tk)
 # fail LABEL
