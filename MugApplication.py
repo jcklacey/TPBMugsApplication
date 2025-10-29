@@ -151,7 +151,7 @@ def urlValidityChecker(url):
             errorState = True
             return False
         # If the string passes this check, we now check to see if its a url we can actually work with (has an easily pullable img file)
-        req = urllib.request.Request(url, method='HEAD')
+        req = urllib.request.Request(url, method='GET')
         with urllib.request.urlopen(req) as response:
             content_type = response.headers.get('Content-Type')
             if response.status == 200 and content_type and content_type.startswith('image/'):
@@ -197,6 +197,7 @@ def imgLink_webscrape():
         print("Prod Image Downloaded")
         errorState = False
     else:  
+        fail_label.config(text="urlValidityChecker___ELSE")
         errorState = True
 
 def qrCode_generate():

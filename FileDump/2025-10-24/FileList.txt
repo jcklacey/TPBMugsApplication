@@ -1,0 +1,2 @@
+File1	File2
+3849-1278-5691-0.png	placeholderImage.png
