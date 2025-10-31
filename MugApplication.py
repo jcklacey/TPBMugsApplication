@@ -13,9 +13,10 @@ from PIL import Image, ImageWin, ImageOps
 import sys
 import subprocess
 from openpyxl import load_workbook
-from pdf2image import convert_from_path
 from pdf2image import convert_from_bytes
 import requests
+import base64
+
 
 # --- Ensure Pillow is installed ---
 try:
@@ -36,11 +37,11 @@ root.resizable(False, False)
 root.attributes('-topmost', True)
 
 #### --- INTIIAL VARIABLE DECLERATIONS
-hotFolderDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplicationHotFolder/"
+hotFolderDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/HotFolder/"
 os.makedirs(hotFolderDir, exist_ok=True)  # create it if it doesn't exist
-fileDumpDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplicationFileDump/"
+fileDumpDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/FileDump/"
 os.makedirs(fileDumpDir, exist_ok=True)  # create it if it doesn't exist
-mugApplicationDir = "C:/Users/DTFPrintBar/AppData/Local/MugApplication/"
+mugApplicationDir = "C:/Users/jackl/OneDrive/Desktop/TPB/TPBMugsApplication/"
  
 ### --- VISUALS
 #TPB LOGO
@@ -150,74 +151,105 @@ def flatten_to_rgb(img, bg_colour =(255,255,255)):
                 pixels[x,y] = bg_colour
     return bg
 
-def urlValidityChecker(url):
-    global errorState
-    # Check first if the imgLink_var text box is blank
-    if not url or str(url).strip() == "":
-        fail_label.config(text = "imgLink cannot be blank!")
-        errorState = True
-        return False
-    if url.startswith("data:"):
-        response = requests.get(url)
-        pdf = convert_from_bytes(response.content)
-        pdf[0].save(url,"PNG")
-        return url
+def pdf_to_png(url, output_dir):
     try:
-        # Then check if the string entered actually leads anywhere
-        parsedURL = urllib.parse.urlparse(url)
-        if not parsedURL.scheme or not parsedURL.netloc:
-            fail_label.config(text="imgLink is not a valid URL!")
-            errorState = True
-            return False
-        # If the string passes this check, we now check to see if its a url we can actually work with (has an easily pullable img file)
-        req = urllib.request.Request(url, method='GET')
-        with urllib.request.urlopen(req) as response:
-            content_type = response.headers.get('Content-Type')
-            if response.status == 200 and content_type and content_type.startswith('image/'):
-                return True
-            else:
-                print(f"Invalid content type or status: {response.status}, {content_type}")
-                return False
-    except urllib.error.HTTPError as e:
-        print(f"❌ HTTP Error: {e.code} {e.reason}")
-        return False
-    except urllib.error.URLError as e:
-        print(f"❌ URL Error: {e.reason}")
+        # Download the PDF file
+        response = requests.get(url)
+        response.raise_for_status()
+        print(f"✅ Downloaded PDF from {url}")
+        # Convert to images (usually one per page)
+        images = convert_from_bytes(response.content, dpi=300)
+        # Save the first page as PNG
+        output_path = os.path.join(output_dir, shipmentNo_var.get()+".png")
+        images[0].save(output_path, "PNG")
+        print(f"✅ Saved PNG preview at {output_path}")
+        return output_path
+
+    except Exception as e:
+        print(f"❌ Failed to convert PDF: {e}")
+        return None
+
+def urlValidityChecker(url):
+    """
+    Checks the URL and returns a local PNG path.
+    For PDFs, converts first page to PNG.
+    For image URLs, downloads the image.
+    Returns: str (path to PNG) or False on failure.
+    """
+    global errorState
+    
+    if not url or str(url).strip() == "":
+        fail_label.config(text="imgLink cannot be blank!")
+        errorState = True
         return False
 
-def imgLink_webscrape():
-    global errorState
-    global fileCount
-    global prodfile
-    global prodfile_copy
-    global prodfile_path
-    global save_path
-    #Check if a file by the same name already exists
-    fileCount = 0
-    while True:
-        if fileCount == 0:
-            filename = f"{shipmentNo_var.get()}.png"
+    try:
+        if url.lower().endswith(".pdf"):
+            # Convert PDF to PNG
+            output_path = pdf_to_png(url, hotFolderDir)
+            if output_path:
+                errorState = False
+                return output_path
+            else:
+                fail_label.config(text="PDF could not be converted.")
+                errorState = True
+                return False
         else:
-            filename = f"{shipmentNo_var.get()}_{fileCount}.png"
-        save_path = os.path.join(hotFolderDir, filename)
-        if not os.path.exists(save_path):
-            break
-        fileCount += 1
-    # Check to see if the link is valid
-    img_url = str(imgLink_var.get())
-    if urlValidityChecker(img_url):
-        urllib.request.urlretrieve(str(imgLink_var.get()), save_path)
-        # Need to open it this way, so it automatically closes, and Photoshop will be able to reference it
-        with Image.open(save_path) as prodfile:
-            # Convert the image from RGBA to RGB to replace the transparency with a white BG
-            prodfile_copy = flatten_to_rgb(prodfile)
-        prodfile_path = save_path
-        print("prodfile_path is:" + prodfile_path)
-        print("Prod Image Downloaded")
-        errorState = False
-    else:  
-        fail_label.config(text="urlValidityChecker___ELSE")
+            # Validate regular image URL
+            parsed = urllib.parse.urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                fail_label.config(text="imgLink is not a valid URL!")
+                errorState = True
+                return False
+
+            req = requests.get(url, stream=True)
+            if req.status_code == 200 and "image" in req.headers.get("Content-Type", ""):
+                # Save image locally
+                filename = f"{shipmentNo_var.get()}.png"
+                output_path = os.path.join(hotFolderDir, filename)
+                with open(output_path, "wb") as f:
+                    f.write(req.content)
+                print(f"✅ Saved image from URL at {output_path}")
+                errorState = False
+                return output_path
+            else:
+                fail_label.config(text=f"Invalid content type or status: {req.status_code}")
+                errorState = True
+                return False
+
+    except Exception as e:
+        print(f"❌ URL check failed: {e}")
+        fail_label.config(text="Invalid or unreachable URL.")
         errorState = True
+        return False
+
+
+def imgLink_webscrape():
+    """
+    Downloads image or converts PDF for the given imgLink_var.
+    Prepares prodfile_copy for further processing.
+    """
+    global errorState, prodfile, prodfile_copy, prodfile_path
+
+    img_url = str(imgLink_var.get()).strip()
+    save_path = urlValidityChecker(img_url)
+
+    if save_path:
+        # Open the PNG safely
+        try:
+            with Image.open(save_path) as prodfile:
+                prodfile_copy = flatten_to_rgb(prodfile)
+            prodfile_path = save_path
+            print(f"✅ Prod image ready at: {prodfile_path}")
+            errorState = False
+        except Exception as e:
+            print(f"❌ Failed to open image: {e}")
+            fail_label.config(text="Failed to open PNG.")
+            errorState = True
+    else:
+        fail_label.config(text="URL check failed, cannot fetch image.")
+        errorState = True
+
 
 def qrCode_generate():
     fileCount = 0
@@ -241,6 +273,8 @@ def qrCode_generate():
  
 def generateButton():
     global errorState
+    global fileCount
+    fileCount = 0
     toggle_off()
     imgLink_webscrape()
     if errorState==False:
