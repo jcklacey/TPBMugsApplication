@@ -5,11 +5,12 @@ import urllib.error
 import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog
-from PIL import Image
+from PIL import Image, ImageDraw
 import sys
 import subprocess
 import threading
 import csv
+from pdf2image import convert_from_path
 
 # --- Ensure Pillow is installed ---
 try:
@@ -312,7 +313,7 @@ def generateButton():
         return   
 
 def process_poster_csv(file_path, save_dir):
-    """Process poster CSV, download artwork, and generate posters with QR codes."""
+    """Process poster CSV, download artwork, and generate posters with QR codes with GUI progress feedback."""
     print(f"📂 Processing CSV: {file_path}")
 
     # --- Read CSV ---
@@ -324,96 +325,103 @@ def process_poster_csv(file_path, save_dir):
     print(f"🧾 Found {total_rows} rows in CSV\n")
 
     for i, row in enumerate(rows, start=1):
-        print(f"➡️  [{i}/{total_rows}] Starting row {i}")
-
-        # --- Extract required fields ---
-        order_number = row.get("Id", "").strip()
+        itemID = row.get("Id", "").strip()
         shipment_id = row.get("Shipment id", "").strip()
         shipment_item = row.get("Shipment item number", "").strip()
         artwork_url = row.get("Artwork 1 artwork file url", "").strip()
 
-        if not order_number or not shipment_id or not artwork_url:
+        if not itemID or not shipment_id or not artwork_url:
             print(f"⚠️  Skipping row {i}: Missing one or more required fields")
             continue
 
         file_name = f"{shipment_id}-{shipment_item}"
-        print(f"   ➤ File name: {file_name}")
-        print(f"   ➤ QR ID: {order_number}")
-        print(f"   ➤ Artwork URL: {artwork_url}")
-
-        # --- Generate unique temp name to prevent overwriting ---
-        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        temp_ext = ".pdf" if artwork_url.lower().endswith(".pdf") else ".png"
-        temp_filename = f"{file_name}_{random_suffix}{temp_ext}"
-        temp_path = os.path.join(save_dir, temp_filename)
+        
+        # --- Update progress bar label: downloading ---
+        root.after(0, lambda i=i, total_rows=total_rows, file_name=file_name: (
+            progress_label.config(text=f"Downloading {file_name} ({i}/{total_rows})")
+        ))
 
         # --- Download artwork ---
         try:
-            urllib.request.urlretrieve(artwork_url, temp_path)
-            print(f"📥  Downloaded artwork to: {temp_path}")
+            local_file_path = os.path.join(save_dir, f"{file_name}.pdf")
+            urllib.request.urlretrieve(artwork_url, local_file_path)
+            print(f"📥  Downloaded artwork to: {local_file_path}")
         except Exception as e:
             print(f"❌  Failed to download artwork for {file_name}: {e}")
             continue
 
-        # --- Process poster ---
-        generate_dynamic_poster(temp_path, order_number, save_dir, i, total_rows)
+        # --- Update progress label: converting ---
+        root.after(0, lambda file_name=file_name: (
+            progress_label.config(text=f"Converting {file_name}...")
+        ))
 
-        # small delay between downloads (helps prevent server throttling)
+        # --- Process poster ---
+        generate_dynamic_poster(local_file_path, itemID, file_name, save_dir, i, total_rows)
+
+        # small delay between downloads (optional)
         time.sleep(0.25)
 
+    root.after(0, lambda: progress_label.config(text="All files processed ✅"))
     print(f"\n✅ All {total_rows} rows processed.\n")
 
-def generate_dynamic_poster(poster_path, order_number, save_dir, index, total):
+
+def generate_dynamic_poster(poster_path, itemID, file_name, save_dir, index, total):
     """Add cut line + QR code to poster, converting PDFs if necessary."""
     try:
-        print(f"🖼️  [{index}/{total}] Processing poster for order: {order_number}")
-
+        print(f"🖼️  [{index}/{total}] Processing poster for order: {file_name}")
         # --- Detect and handle PDF ---
         if poster_path.lower().endswith(".pdf"):
             print(f"   🧾 Converting PDF to image...")
-            with Image.open(poster_path) as pdf:
-                pdf.load()
-                img = pdf.convert("RGB")
+            
+            pages = convert_from_path(poster_path, dpi=300)
+            img = pages[0]  # take first page
         else:
             img = Image.open(poster_path).convert("RGB")
 
         # --- Add white background and red cut line ---
-        margin = 50
+        bottom_margin = 10
         line_thickness = 10
-        template_width = img.width + (margin * 2)
-        template_height = img.height + (margin * 2)
+        template_width = img.width
+        template_height = img.height + bottom_margin
         template_bg = Image.new("RGB", (template_width, template_height), (255, 255, 255))
 
-        x_offset = (template_width - img.width) // 2
-        y_offset = (template_height - img.height) // 2
-        template_bg.paste(img, (x_offset, y_offset))
+        template_bg.paste(img, (0, 0))
 
         draw = ImageDraw.Draw(template_bg)
         draw.rectangle(
-            [0, template_bg.height - line_thickness, template_bg.width, template_bg.height],
+            [0, template_bg.height - line_thickness, template_width, template_height],
             fill=(255, 0, 0)
         )
 
         # --- Generate and place QR code ---
-        qr_img = qrcode.make(order_number)
-        qr_rgb = qr_img.convert("RGB")
+        QR_SIZE = 200  # fixed QR size in pixels
+        qr_img = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_H,
+            box_size=10,
+            border=4
+        )
+        qr_img.add_data(itemID)
+        qr_img.make(fit=True)
+        qr_rgb = qr_img.make_image(fill_color="black", back_color="white").convert("RGB")
+        qr_rgb = qr_rgb.resize((QR_SIZE, QR_SIZE), Image.Resampling.LANCZOS)
 
         combined_height = template_bg.height + qr_rgb.height + 20
         combined_img = Image.new("RGB", (template_bg.width, combined_height), (255, 255, 255))
         combined_img.paste(template_bg, (0, 0))
 
-        qr_x = (combined_img.width - qr_rgb.width) // 2
+        qr_x = 0
         qr_y = template_bg.height + 10
         combined_img.paste(qr_rgb, (qr_x, qr_y))
 
         # --- Save final image ---
-        output_filename = f"{order_number}_{index}.png"
+        output_filename = f"{file_name}_{index}.png"
         output_path = os.path.join(save_dir, output_filename)
-        combined_img.save(output_path)
+        combined_img.save(output_path, dpi=(300,300))
         print(f"✅  Saved poster: {output_path}")
 
     except Exception as e:
-        print(f"❌  Error generating poster for {order_number}: {e}")
+        print(f"❌  Error generating poster for {file_name}: {e}")
 
     finally:
         # --- Clean up temp file ---
@@ -491,7 +499,7 @@ Generate_button = ttk.Button(mainFrame, text='Generate Prod File', style='My.TBu
 Generate_button.pack(pady=3)
 #----
 # Upload BUTTON
-upload_button = ttk.Button(mainFrame, text='Upload .csv File', style='My.TButton', command=csvUpload_click)
+upload_button = ttk.Button(mainFrame, text='Upload .csv File', style='My.TButton', width=20, command=csvUpload_click)
 upload_button.pack(pady=5)
 #---- 
 # progress BAR
